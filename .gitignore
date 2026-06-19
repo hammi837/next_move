@@ -1,0 +1,32 @@
+# ─── Python / Backend ───────────────────────────────────────────────
+BE/venv/
+BE/__pycache__/
+BE/**/__pycache__/
+BE/**/*.pyc
+BE/**/*.pyo
+BE/.env
+BE/*.egg-info/
+BE/dist/
+BE/build/
+BE/.pytest_cache/
+BE/.mypy_cache/
+BE/logs/
+BE/*.log
+
+# Alembic
+BE/alembic/versions/__pycache__/
+
+# ─── Node / Frontend ─────────────────────────────────────────────────
+FE/node_modules/
+FE/dist/
+FE/.env
+FE/.env.local
+FE/.env.*.local
+
+# ─── OS & Editor ─────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo

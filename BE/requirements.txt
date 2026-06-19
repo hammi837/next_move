@@ -1,0 +1,39 @@
+# Core Framework
+fastapi
+uvicorn[standard]
+pydantic
+pydantic-settings
+
+# Database
+sqlalchemy
+psycopg2-binary
+alembic
+
+# Cache
+redis
+
+# Data Processing
+pandas
+numpy
+
+# API Integrations
+httpx
+yfinance
+
+# Background Tasks
+APScheduler
+
+# Utilities
+python-dotenv
+python-dateutil
+pytz
+
+# Auth (used by existing routes)
+python-jose[cryptography]
+passlib[bcrypt]
+email-validator
+python-multipart
+
+# Testing
+pytest
+pytest-asyncio
