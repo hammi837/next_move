@@ -98,4 +98,31 @@ export const stocksService = {
   }
 };
 
+export const indicatorsService = {
+  getSummary: async (symbol, days = 90) => {
+    const response = await api.get(`/indicators/${symbol}/summary?days=${days}`);
+    return response.data;
+  },
+  getIndicators: async (symbol, days = 120) => {
+    const response = await api.get(`/indicators/${symbol}/indicators?days=${days}`);
+    return response.data;
+  },
+  getRSI: async (symbol) => {
+    const response = await api.get(`/indicators/${symbol}/rsi`);
+    return response.data;
+  },
+  getMACD: async (symbol) => {
+    const response = await api.get(`/indicators/${symbol}/macd`);
+    return response.data;
+  },
+  getPatterns: async (symbol) => {
+    const response = await api.get(`/indicators/${symbol}/patterns/candlestick`);
+    return response.data;
+  },
+  getTrendAnalysis: async (symbol, days = 90) => {
+    const response = await api.get(`/indicators/${symbol}/trend-analysis?days=${days}`);
+    return response.data;
+  },
+};
+
 export default api;
