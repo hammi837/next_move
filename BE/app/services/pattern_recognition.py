@@ -1,174 +1,230 @@
 """
 Pattern recognition service.
-
-Detects support/resistance levels, candlestick patterns, and trends.
+Detects candlestick patterns, support/resistance levels, and trend direction.
+Uses pure pandas/numpy.
 """
-
-from typing import Any
 
 import numpy as np
 import pandas as pd
+from typing import Any, Dict, List, Optional, Tuple
+from datetime import datetime, timedelta
+import logging
+
+from app.db.database import SessionLocal
+from app.db.models import PriceHistory
+from sqlalchemy import desc
+
+logger = logging.getLogger(__name__)
+
+
+def _get_ohlcv(symbol: str, limit: int = 60) -> Optional[pd.DataFrame]:
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(PriceHistory)
+            .filter(PriceHistory.symbol == symbol)
+            .order_by(desc(PriceHistory.timestamp))
+            .limit(limit)
+            .all()
+        )
+        if not rows:
+            return None
+        rows = list(reversed(rows))
+        return pd.DataFrame([{
+            "timestamp": r.timestamp,
+            "open":   r.open_price  or 0.0,
+            "high":   r.high_price  or 0.0,
+            "low":    r.low_price   or 0.0,
+            "close":  r.close_price or 0.0,
+            "volume": r.volume      or 0.0,
+        } for r in rows])
+    finally:
+        db.close()
 
 
 class PatternRecognitionService:
-    """Identifies chart and candlestick patterns from OHLCV data."""
+    """Identify candlestick patterns, support/resistance, and trend from DB data."""
 
-    def __init__(self) -> None:
-        pass
+    # ── Candlestick detectors ─────────────────────────────────────────────
 
-    async def find_support_resistance(
-        self,
-        symbol: str,
-        window: int = 20,
-        num_levels: int = 5,
-    ) -> dict[str, list[float]]:
-        """
-        Identify key support and resistance price levels.
+    @staticmethod
+    def _is_doji(o, h, l, c) -> bool:
+        rng = h - l
+        return rng > 0 and abs(c - o) / rng < 0.1
 
-        Uses rolling-window local minima/maxima detection.
-        """
-        from app.services.data_collector import DataCollectorService
+    @staticmethod
+    def _is_hammer(o, h, l, c) -> bool:
+        body = abs(c - o)
+        rng  = h - l
+        if rng == 0:
+            return False
+        lower_wick = min(o, c) - l
+        upper_wick = h - max(o, c)
+        return lower_wick > 2 * body and upper_wick < body and body < 0.3 * rng
 
-        collector = DataCollectorService()
-        history = await collector.collect_historical(symbol=symbol)
+    @staticmethod
+    def _is_inverted_hammer(o, h, l, c) -> bool:
+        body = abs(c - o)
+        rng  = h - l
+        if rng == 0:
+            return False
+        lower_wick = min(o, c) - l
+        upper_wick = h - max(o, c)
+        return upper_wick > 2 * body and lower_wick < body and body < 0.3 * rng
 
-        if not history:
-            return {"support": [], "resistance": []}
+    @staticmethod
+    def _is_bullish_engulfing(p, c) -> bool:
+        return (p["close"] < p["open"] and c["close"] > c["open"]
+                and c["open"] < p["close"] and c["close"] > p["open"])
 
-        df = pd.DataFrame(history)
-        highs = pd.to_numeric(df["high"], errors="coerce")
-        lows = pd.to_numeric(df["low"], errors="coerce")
+    @staticmethod
+    def _is_bearish_engulfing(p, c) -> bool:
+        return (p["close"] > p["open"] and c["close"] < c["open"]
+                and c["open"] > p["close"] and c["close"] < p["open"])
 
-        # Local maxima → resistance
-        rolling_max = highs.rolling(window=window, center=True).max()
-        resistance_mask = highs == rolling_max
-        resistance_levels = sorted(highs[resistance_mask].unique().tolist(), reverse=True)[
-            :num_levels
-        ]
+    @staticmethod
+    def _is_morning_star(c1, c2, c3) -> bool:
+        body1 = abs(c1["close"] - c1["open"])
+        body2 = abs(c2["close"] - c2["open"])
+        body3 = abs(c3["close"] - c3["open"])
+        return (c1["close"] < c1["open"] and body2 < body1 * 0.5
+                and c3["close"] > c3["open"] and body3 > body1 * 0.5)
 
-        # Local minima → support
-        rolling_min = lows.rolling(window=window, center=True).min()
-        support_mask = lows == rolling_min
-        support_levels = sorted(lows[support_mask].unique().tolist())[:num_levels]
+    @staticmethod
+    def _is_evening_star(c1, c2, c3) -> bool:
+        body1 = abs(c1["close"] - c1["open"])
+        body2 = abs(c2["close"] - c2["open"])
+        body3 = abs(c3["close"] - c3["open"])
+        return (c1["close"] > c1["open"] and body2 < body1 * 0.5
+                and c3["close"] < c3["open"] and body3 > body1 * 0.5)
 
-        return {
-            "support": [round(float(s), 2) for s in support_levels],
-            "resistance": [round(float(r), 2) for r in resistance_levels],
-        }
+    # ── Public methods ────────────────────────────────────────────────────
 
-    async def detect_candlestick_patterns(
-        self,
-        symbol: str,
-    ) -> list[dict[str, Any]]:
-        """
-        Detect common candlestick patterns in recent data.
-
-        Returns a list of dicts with pattern name, date, and signal.
-        """
-        from app.services.data_collector import DataCollectorService
-
-        collector = DataCollectorService()
-        history = await collector.collect_historical(symbol=symbol)
-
-        if len(history) < 3:
+    async def detect_candlestick_patterns(self, symbol: str, lookback: int = 20) -> List[Dict]:
+        df = _get_ohlcv(symbol, max(lookback, 10))
+        if df is None or len(df) < 3:
             return []
 
-        patterns: list[dict[str, Any]] = []
-        df = pd.DataFrame(history)
+        patterns = []
 
-        for col in ("open", "high", "low", "close"):
-            df[col] = pd.to_numeric(df[col], errors="coerce")
+        for i, row in df.iterrows():
+            o, h, l, c = row["open"], row["high"], row["low"], row["close"]
+            ts = str(row["timestamp"])
 
-        # Simple doji detection (open ≈ close)
-        for i in range(len(df)):
-            row = df.iloc[i]
-            body = abs(row["close"] - row["open"])
-            full_range = row["high"] - row["low"]
-            if full_range > 0 and body / full_range < 0.1:
-                patterns.append(
-                    {
-                        "pattern": "doji",
-                        "date": str(row.get("timestamp", "")),
-                        "signal": "neutral",
-                        "confidence": 0.7,
-                    }
-                )
+            if self._is_doji(o, h, l, c):
+                patterns.append({"pattern": "doji", "date": ts, "signal": "neutral", "confidence": 0.7})
+            if self._is_hammer(o, h, l, c):
+                patterns.append({"pattern": "hammer", "date": ts, "signal": "bullish", "confidence": 0.75})
+            if self._is_inverted_hammer(o, h, l, c):
+                patterns.append({"pattern": "inverted_hammer", "date": ts, "signal": "bullish", "confidence": 0.65})
 
-        # Engulfing detection
-        for i in range(1, len(df)):
-            prev, curr = df.iloc[i - 1], df.iloc[i]
-            if (
-                prev["close"] < prev["open"]
-                and curr["close"] > curr["open"]
-                and curr["close"] > prev["open"]
-                and curr["open"] < prev["close"]
-            ):
-                patterns.append(
-                    {
-                        "pattern": "bullish_engulfing",
-                        "date": str(curr.get("timestamp", "")),
-                        "signal": "bullish",
-                        "confidence": 0.75,
-                    }
-                )
-            elif (
-                prev["close"] > prev["open"]
-                and curr["close"] < curr["open"]
-                and curr["close"] < prev["open"]
-                and curr["open"] > prev["close"]
-            ):
-                patterns.append(
-                    {
-                        "pattern": "bearish_engulfing",
-                        "date": str(curr.get("timestamp", "")),
-                        "signal": "bearish",
-                        "confidence": 0.75,
-                    }
-                )
+            if i >= 1:
+                p = df.iloc[i - 1]
+                if self._is_bullish_engulfing(p, row):
+                    patterns.append({"pattern": "bullish_engulfing", "date": ts, "signal": "bullish", "confidence": 0.80})
+                if self._is_bearish_engulfing(p, row):
+                    patterns.append({"pattern": "bearish_engulfing", "date": ts, "signal": "bearish", "confidence": 0.80})
 
-        return patterns[-20:]  # Return most recent 20 patterns
+            if i >= 2:
+                c1 = df.iloc[i - 2]
+                c2 = df.iloc[i - 1]
+                c3 = row
+                if self._is_morning_star(c1, c2, c3):
+                    patterns.append({"pattern": "morning_star", "date": ts, "signal": "bullish", "confidence": 0.85})
+                if self._is_evening_star(c1, c2, c3):
+                    patterns.append({"pattern": "evening_star", "date": ts, "signal": "bearish", "confidence": 0.85})
 
-    async def detect_trend(
-        self,
-        symbol: str,
-        short_window: int = 20,
-        long_window: int = 50,
-    ) -> dict[str, Any]:
-        """
-        Detect the current trend using moving-average crossover.
+        return patterns[-20:]
 
-        Returns the current trend direction and strength.
-        """
-        from app.services.data_collector import DataCollectorService
+    async def find_support_resistance(self, symbol: str, window: int = 5, num_levels: int = 5) -> Dict:
+        df = _get_ohlcv(symbol, 60)
+        if df is None or len(df) < window * 2:
+            return {"support": [], "resistance": []}
 
-        collector = DataCollectorService()
-        history = await collector.collect_historical(symbol=symbol)
+        highs = df["high"].values
+        lows  = df["low"].values
 
-        if len(history) < long_window:
+        support_levels    = []
+        resistance_levels = []
+
+        for i in range(window, len(df) - window):
+            if lows[i]  == min(lows[max(0, i-window):i+window]):
+                support_levels.append(round(float(lows[i]), 2))
+            if highs[i] == max(highs[max(0, i-window):i+window]):
+                resistance_levels.append(round(float(highs[i]), 2))
+
+        # Deduplicate close levels (within 0.5%)
+        def cluster(levels, tol=0.005):
+            levels = sorted(set(levels))
+            result = []
+            for lvl in levels:
+                if not result or abs(lvl - result[-1]) / result[-1] > tol:
+                    result.append(lvl)
+            return result
+
+        return {
+            "support":    cluster(support_levels)[:num_levels],
+            "resistance": list(reversed(cluster(resistance_levels)))[:num_levels],
+        }
+
+    async def detect_trend(self, symbol: str, short_window: int = 10, long_window: int = 30) -> Dict:
+        df = _get_ohlcv(symbol, max(long_window + 10, 60))
+        if df is None or len(df) < long_window:
             return {"direction": "unknown", "strength": 0.0}
 
-        df = pd.DataFrame(history)
-        closes = pd.to_numeric(df["close"], errors="coerce")
+        closes = df["close"]
+        sma_short = closes.rolling(window=short_window).mean().iloc[-1]
+        sma_long  = closes.rolling(window=long_window).mean().iloc[-1]
+        current   = float(closes.iloc[-1])
 
-        sma_short = closes.rolling(window=short_window).mean()
-        sma_long = closes.rolling(window=long_window).mean()
-
-        latest_short = float(sma_short.iloc[-1])
-        latest_long = float(sma_long.iloc[-1])
-
-        if latest_short > latest_long:
+        if sma_short > sma_long:
             direction = "bullish"
-            strength = min((latest_short - latest_long) / latest_long * 100, 100)
-        elif latest_short < latest_long:
+            strength  = min((sma_short - sma_long) / sma_long * 100, 100)
+        elif sma_short < sma_long:
             direction = "bearish"
-            strength = min((latest_long - latest_short) / latest_long * 100, 100)
+            strength  = min((sma_long - sma_short) / sma_long * 100, 100)
         else:
             direction = "neutral"
-            strength = 0.0
+            strength  = 0.0
 
         return {
             "direction": direction,
-            "strength": round(strength, 2),
-            "sma_short": round(latest_short, 2),
-            "sma_long": round(latest_long, 2),
+            "strength":  round(float(strength), 2),
+            "sma_short": round(float(sma_short), 2),
+            "sma_long":  round(float(sma_long), 2),
+            "current_price": round(current, 2),
         }
+
+    def detect_trend_patterns(self, symbol: str, lookback: int = 50) -> Dict:
+        """Synchronous version used by the indicators route."""
+        df = _get_ohlcv(symbol, lookback)
+        if df is None or len(df) < 10:
+            return {}
+
+        closes = df["close"].values
+        x = np.arange(len(closes))
+        coef = np.polyfit(x, closes, 1)
+        slope = float(coef[0])
+        mean  = float(np.mean(closes))
+        norm_slope = slope / mean * 100 if mean else 0
+
+        if norm_slope > 0.3:
+            trend = "UPTREND"
+        elif norm_slope < -0.3:
+            trend = "DOWNTREND"
+        else:
+            trend = "SIDEWAYS"
+
+        return {
+            "trend": trend,
+            "slope": round(slope, 4),
+            "channel": {
+                "upper": round(float(np.max(closes[-20:])), 2),
+                "middle": round(float(np.mean(closes[-20:])), 2),
+                "lower": round(float(np.min(closes[-20:])), 2),
+            }
+        }
+
+
+# Singleton
+pattern_recognition_service = PatternRecognitionService()

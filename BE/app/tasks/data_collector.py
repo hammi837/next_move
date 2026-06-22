@@ -292,6 +292,17 @@ class DataCollector:
             max_instances=1,
         )
 
+        # Calculate technical indicators every hour
+        from app.tasks.indicator_calculator import calculate_all_indicators
+        self.scheduler.add_job(
+            calculate_all_indicators,
+            IntervalTrigger(hours=1),
+            id="calculate_indicators",
+            name="Calculate Technical Indicators",
+            replace_existing=True,
+            max_instances=1,
+        )
+
         self.scheduler.start()
         self.is_running = True
         logger.info("✅ Background data collector started")
