@@ -1,3 +1,4 @@
+import asyncio
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -7,6 +8,7 @@ import os
 
 from app.config import settings
 from app.db.database import init_db
+from app.services.cache_service import cache_service
 
 # Setup logging
 os.makedirs("logs", exist_ok=True)
@@ -37,6 +39,24 @@ async def lifespan(app: FastAPI):
         from app.tasks.data_collector import data_collector
         data_collector.start()
         logger.info("✅ Background data collector started")
+        # Fire initial collection as a non-blocking background task
+        # so the server finishes startup immediately
+        async def _initial_collect():
+            logger.info("⏳ Running initial data collection in background...")
+            try:
+                # Clear stale dashboard cache first
+                cache_service.delete("dashboard_summary")
+                await data_collector.seed_historical_data()   # seed 7-day history first
+                await data_collector.collect_gold_data()
+                await data_collector.collect_stock_data()
+                await data_collector.collect_commodity_data()
+                # Clear again so next request gets fresh data with real changes
+                cache_service.delete("dashboard_summary")
+                logger.info("✅ Initial data collection complete")
+            except Exception as ex:
+                logger.warning(f"⚠️ Initial data collection error: {ex}")
+
+        asyncio.create_task(_initial_collect())
     except Exception as e:
         logger.warning(f"⚠️ Background data collector failed to start: {e}")
 

@@ -67,14 +67,45 @@ def get_current_gold_price(db: Session = Depends(get_db)):
 @router.get("/history")
 def get_gold_history(
     days: int = Query(7, ge=1, le=365),
+    interval: str = Query("1d", regex="^(1m|5m|15m|30m|1h|1d)$"),
     db: Session = Depends(get_db),
 ):
-    """Get historical gold prices."""
+    """Get historical gold prices. interval: 1m,5m,15m,30m,1h for intraday; 1d for daily."""
     try:
-        cache_key = f"gold_history_{days}d"
-        cached = cache_service.get(cache_key)
-        if cached:
-            return cached
+        cache_key = f"gold_history_{days}d_{interval}"
+        try:
+            cached = cache_service.get(cache_key)
+            if cached:
+                return cached
+        except Exception:
+            pass
+
+        # For intraday intervals, always fetch live from yfinance (not stored in DB)
+        if interval != "1d":
+            period_map = {1: "1d", 2: "2d", 5: "5d", 7: "7d"}
+            period = period_map.get(days, f"{days}d")
+            historical = market_data_service.fetch_gold_historical(period=period, interval=interval)
+            if not historical:
+                return []
+            result = [
+                {
+                    "symbol": "GOLD",
+                    "open": r.get("Open"),
+                    "high": r.get("High"),
+                    "low": r.get("Low"),
+                    "close": r.get("Close"),
+                    "volume": r.get("Volume"),
+                    "timestamp": r.get("Datetime", r.get("Date", "")).isoformat()
+                        if hasattr(r.get("Datetime", r.get("Date", "")), "isoformat")
+                        else str(r.get("Datetime", r.get("Date", ""))),
+                }
+                for r in historical
+            ]
+            try:
+                cache_service.set(cache_key, result, ex=60)  # 1 min cache for intraday
+            except Exception:
+                pass
+            return result
 
         start_date = datetime.utcnow() - timedelta(days=days)
         prices = (
@@ -123,7 +154,10 @@ def get_gold_history(
             }
             for p in prices
         ]
-        cache_service.set(cache_key, result, ex=3600)
+        try:
+            cache_service.set(cache_key, result, ex=3600)
+        except Exception:
+            pass
         return result
 
     except Exception as e:

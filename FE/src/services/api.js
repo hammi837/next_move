@@ -2,6 +2,7 @@ import axios from 'axios';
 
 const api = axios.create({
   baseURL: 'http://localhost:8000/api',
+  timeout: 15000, // 15s — fail fast, don't hang indefinitely
   headers: {
     'Content-Type': 'application/json',
   },
@@ -47,9 +48,9 @@ export const goldService = {
       throw error;
     }
   },
-  getHistory: async (days = 7) => {
+  getHistory: async (days = 7, interval = '1d') => {
     try {
-      const response = await api.get(`/gold/history?days=${days}`);
+      const response = await api.get(`/gold/history?days=${days}&interval=${interval}`);
       return response.data;
     } catch (error) {
       console.error('Error fetching gold history:', error);
@@ -86,9 +87,9 @@ export const stocksService = {
       throw error;
     }
   },
-  getHistory: async (symbol, days = 30) => {
+  getHistory: async (symbol, days = 30, interval = '1d') => {
     try {
-      const response = await api.get(`/stocks/history/${symbol}?days=${days}`);
+      const response = await api.get(`/stocks/history/${symbol}?days=${days}&interval=${interval}`);
       return response.data;
     } catch (error) {
       console.error(`Error fetching history for ${symbol}:`, error);

@@ -69,11 +69,47 @@ def get_stock_price(symbol: str, db: Session = Depends(get_db)):
 def get_stock_history(
     symbol: str,
     days: int = Query(30, ge=1, le=365),
+    interval: str = Query("1d", regex="^(1m|5m|15m|30m|1h|1d)$"),
     db: Session = Depends(get_db),
 ):
-    """Get historical stock prices."""
+    """Get historical stock prices. interval: 1m,5m,15m,30m,1h for intraday; 1d for daily."""
     try:
         symbol = symbol.upper()
+        cache_key = f"stock_history_{symbol}_{days}d_{interval}"
+        try:
+            cached = cache_service.get(cache_key)
+            if cached:
+                return cached
+        except Exception:
+            pass
+
+        # Intraday — always live from yfinance
+        if interval != "1d":
+            period_map = {1: "1d", 2: "2d", 5: "5d", 7: "7d"}
+            period = period_map.get(days, f"{days}d")
+            historical = market_data_service.fetch_stock_historical(symbol, period=period, interval=interval)
+            if not historical:
+                return []
+            result = [
+                {
+                    "symbol": symbol,
+                    "open": r.get("Open"),
+                    "high": r.get("High"),
+                    "low": r.get("Low"),
+                    "close": r.get("Close"),
+                    "volume": r.get("Volume"),
+                    "timestamp": r.get("Datetime", r.get("Date", "")).isoformat()
+                        if hasattr(r.get("Datetime", r.get("Date", "")), "isoformat")
+                        else str(r.get("Datetime", r.get("Date", ""))),
+                }
+                for r in historical
+            ]
+            try:
+                cache_service.set(cache_key, result, ex=60)
+            except Exception:
+                pass
+            return result
+
         start_date = datetime.utcnow() - timedelta(days=days)
 
         prices = (
@@ -109,7 +145,7 @@ def get_stock_history(
                     .all()
                 )
 
-        return [
+        result = [
             {
                 "id": p.id,
                 "symbol": p.symbol,
@@ -122,6 +158,11 @@ def get_stock_history(
             }
             for p in prices
         ]
+        try:
+            cache_service.set(cache_key, result, ex=3600)
+        except Exception:
+            pass
+        return result
 
     except Exception as e:
         logger.error(f"Error fetching stock history for {symbol}: {e}")

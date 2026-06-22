@@ -4,11 +4,25 @@ from typing import Dict, List, Optional
 from datetime import datetime
 import pandas as pd
 import logging
+import concurrent.futures
 
 from app.config import settings
 from app.services.cache_service import cache_service
 
 logger = logging.getLogger(__name__)
+
+YFINANCE_TIMEOUT = 10  # seconds — fail fast instead of hanging
+
+
+def _yf_fetch_with_timeout(ticker_symbol: str, **kwargs):
+    """Run a yfinance history call with a hard timeout."""
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(yf.Ticker(ticker_symbol).history, **kwargs)
+        try:
+            return future.result(timeout=YFINANCE_TIMEOUT)
+        except concurrent.futures.TimeoutError:
+            logger.error(f"yfinance timeout for {ticker_symbol} after {YFINANCE_TIMEOUT}s")
+            return None
 
 
 class MarketDataService:
@@ -27,11 +41,9 @@ class MarketDataService:
 
         def fetch():
             try:
-                # GC=F is Gold Futures on Yahoo Finance
-                gold = yf.Ticker("GC=F")
-                data = gold.history(period="1d")
+                data = _yf_fetch_with_timeout("GC=F", period="1d")
 
-                if data.empty:
+                if data is None or data.empty:
                     logger.warning("Empty gold data from yfinance")
                     return None
 
@@ -52,16 +64,15 @@ class MarketDataService:
 
         return cache_service.get_or_set(cache_key, fetch, ex=300)
 
-    def fetch_gold_historical(self, period: str = "1mo") -> Optional[List[Dict]]:
+    def fetch_gold_historical(self, period: str = "1mo", interval: str = "1d") -> Optional[List[Dict]]:
         """Fetch historical gold data."""
-        cache_key = f"gold_historical_{period}"
+        cache_key = f"gold_historical_{period}_{interval}"
 
         def fetch():
             try:
-                gold = yf.Ticker("GC=F")
-                data = gold.history(period=period)
+                data = _yf_fetch_with_timeout("GC=F", period=period, interval=interval)
 
-                if data.empty:
+                if data is None or data.empty:
                     logger.warning(f"Empty gold historical data for {period}")
                     return None
 
@@ -70,7 +81,8 @@ class MarketDataService:
                 logger.error(f"Error fetching gold historical data: {e}")
                 return None
 
-        return cache_service.get_or_set(cache_key, fetch, ex=3600)
+        ttl = 60 if interval != "1d" else 3600
+        return cache_service.get_or_set(cache_key, fetch, ex=ttl)
 
     # ── Stock Market ───────────────────────────────────────────────────────
 
@@ -80,10 +92,9 @@ class MarketDataService:
 
         def fetch():
             try:
-                stock = yf.Ticker(symbol)
-                data = stock.history(period="1d")
+                data = _yf_fetch_with_timeout(symbol, period="1d")
 
-                if data.empty:
+                if data is None or data.empty:
                     logger.warning(f"Empty stock data for {symbol}")
                     return None
 
@@ -112,10 +123,9 @@ class MarketDataService:
 
         def fetch():
             try:
-                stock = yf.Ticker(symbol)
-                data = stock.history(period=period, interval=interval)
+                data = _yf_fetch_with_timeout(symbol, period=period, interval=interval)
 
-                if data.empty:
+                if data is None or data.empty:
                     logger.warning(f"Empty historical data for {symbol}")
                     return None
 
@@ -147,10 +157,9 @@ class MarketDataService:
 
         def fetch():
             try:
-                commodity = yf.Ticker(ticker)
-                data = commodity.history(period="1d")
+                data = _yf_fetch_with_timeout(ticker, period="1d")
 
-                if data.empty:
+                if data is None or data.empty:
                     return None
 
                 latest = data.iloc[-1]

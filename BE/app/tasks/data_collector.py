@@ -1,8 +1,10 @@
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from datetime import datetime
+import asyncio
 import logging
 from typing import List
+from functools import partial
 
 from app.config import settings
 from app.services.market_data import market_data_service
@@ -26,7 +28,10 @@ class DataCollector:
         db = SessionLocal()
         try:
             logger.info("📊 Collecting gold data...")
-            gold_data = market_data_service.fetch_gold_price_forex()
+            loop = asyncio.get_event_loop()
+            gold_data = await loop.run_in_executor(
+                None, market_data_service.fetch_gold_price_forex
+            )
             if not gold_data:
                 logger.warning("Failed to fetch gold data")
                 self._log_sync(db, "GOLD", "fetch", "failure", error="Empty response")
@@ -73,7 +78,10 @@ class DataCollector:
             collected = 0
 
             for symbol in symbols:
-                stock_data = market_data_service.fetch_stock_price(symbol)
+                loop = asyncio.get_event_loop()
+                stock_data = await loop.run_in_executor(
+                    None, partial(market_data_service.fetch_stock_price, symbol)
+                )
                 if not stock_data:
                     logger.warning(f"Failed to fetch data for {symbol}")
                     continue
@@ -120,7 +128,10 @@ class DataCollector:
             collected = 0
 
             for commodity in commodities:
-                data = market_data_service.fetch_commodity_price(commodity)
+                loop = asyncio.get_event_loop()
+                data = await loop.run_in_executor(
+                    None, partial(market_data_service.fetch_commodity_price, commodity)
+                )
                 if not data:
                     continue
 
@@ -136,6 +147,94 @@ class DataCollector:
         except Exception as e:
             db.rollback()
             logger.error(f"❌ Error collecting commodity data: {e}")
+        finally:
+            db.close()
+
+    # ── Historical seed (runs once on boot if DB is sparse) ───────────────
+
+    async def seed_historical_data(self):
+        """Seed 7 days of daily history for all symbols if the DB has < 2 distinct days."""
+        db = SessionLocal()
+        try:
+            from sqlalchemy import func
+            from app.db.models import PriceHistory as PH
+
+            symbols_to_seed = []
+
+            # Gold
+            gold_days = db.query(func.count(func.distinct(
+                func.date_trunc('day', PH.timestamp)
+            ))).filter(PH.symbol == "GOLD").scalar() or 0
+            if gold_days < 2:
+                symbols_to_seed.append(("GOLD", "gold"))
+
+            # Stocks
+            for sym in ["AAPL", "GOOGL", "MSFT", "AMZN", "TSLA"]:
+                stock_days = db.query(func.count(func.distinct(
+                    func.date_trunc('day', PH.timestamp)
+                ))).filter(PH.symbol == sym).scalar() or 0
+                if stock_days < 2:
+                    symbols_to_seed.append((sym, "stock"))
+
+            if not symbols_to_seed:
+                logger.info("✅ Historical data already seeded, skipping.")
+                return
+
+            logger.info(f"🌱 Seeding 7-day history for: {[s[0] for s in symbols_to_seed]}")
+            loop = asyncio.get_event_loop()
+
+            for symbol, market_type in symbols_to_seed:
+                try:
+                    if symbol == "GOLD":
+                        historical = await loop.run_in_executor(
+                            None, partial(market_data_service.fetch_gold_historical, "7d", "1d")
+                        )
+                        mtype = MarketType.GOLD
+                    else:
+                        historical = await loop.run_in_executor(
+                            None, partial(market_data_service.fetch_stock_historical, symbol, "7d", "1d")
+                        )
+                        mtype = MarketType.STOCK
+
+                    if not historical:
+                        continue
+
+                    for rec in historical:
+                        ts = rec.get("Date") or rec.get("Datetime")
+                        if ts is None:
+                            continue
+                        if hasattr(ts, 'to_pydatetime'):
+                            ts = ts.to_pydatetime().replace(tzinfo=None)
+                        elif hasattr(ts, 'tzinfo') and ts.tzinfo:
+                            ts = ts.replace(tzinfo=None)
+
+                        # Skip if already exists for this day
+                        exists = db.query(PriceHistory).filter(
+                            PriceHistory.symbol == symbol,
+                            func.date_trunc('day', PriceHistory.timestamp) == func.date_trunc('day', ts)
+                        ).first()
+                        if exists:
+                            continue
+
+                        db.add(PriceHistory(
+                            symbol=symbol,
+                            market_type=mtype,
+                            open_price=rec.get("Open"),
+                            high_price=rec.get("High"),
+                            low_price=rec.get("Low"),
+                            close_price=rec.get("Close"),
+                            volume=rec.get("Volume"),
+                            timestamp=ts,
+                        ))
+
+                    db.commit()
+                    logger.info(f"✅ Seeded history for {symbol}")
+                except Exception as e:
+                    db.rollback()
+                    logger.error(f"❌ Failed to seed {symbol}: {e}")
+
+        except Exception as e:
+            logger.error(f"❌ Historical seed failed: {e}")
         finally:
             db.close()
 

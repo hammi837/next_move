@@ -1,7 +1,7 @@
 import redis
 import json
 from typing import Optional, Any, Callable
-from datetime import timedelta
+from datetime import timedelta, datetime
 import logging
 
 from app.config import settings
@@ -9,14 +9,44 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 
+class InMemoryCache:
+    """Simple in-process cache used as fallback when Redis is unavailable."""
+
+    def __init__(self):
+        self._store: dict = {}  # key -> (value, expires_at)
+
+    def get(self, key: str) -> Optional[Any]:
+        entry = self._store.get(key)
+        if entry is None:
+            return None
+        value, expires_at = entry
+        if expires_at and datetime.utcnow() > expires_at:
+            del self._store[key]
+            return None
+        return value
+
+    def set(self, key: str, value: Any, ex: int = 3600) -> bool:
+        expires_at = datetime.utcnow() + timedelta(seconds=ex) if ex else None
+        self._store[key] = (value, expires_at)
+        return True
+
+    def delete(self, key: str) -> bool:
+        self._store.pop(key, None)
+        return True
+
+
 class CacheService:
-    """Redis cache service for market data caching."""
+    """Redis cache service with automatic in-memory fallback."""
 
     def __init__(self):
         self._client = None
+        self._fallback = InMemoryCache()
+        self._redis_available = True  # optimistic; will flip on first failure
 
     def _get_client(self) -> redis.Redis:
-        """Lazy-connect to Redis."""
+        """Lazy-connect to Redis. Returns None if Redis is unavailable."""
+        if not self._redis_available:
+            return None
         if self._client is None:
             try:
                 self._client = redis.Redis(
@@ -31,9 +61,17 @@ class CacheService:
                 self._client.ping()
                 logger.info("✅ Redis connection successful")
             except redis.ConnectionError as e:
-                logger.warning(f"⚠️ Redis unavailable – caching disabled: {e}")
+                logger.warning(f"⚠️ Redis unavailable – falling back to in-memory cache: {e}")
                 self._client = None
+                self._redis_available = False
         return self._client
+
+    def _mark_redis_dead(self, e: Exception):
+        """Mark Redis as unavailable so we stop hammering it."""
+        if self._redis_available:
+            logger.warning(f"⚠️ Redis unavailable – switching to in-memory cache: {e}")
+            self._redis_available = False
+            self._client = None
 
     # ── Core operations ──────────────────────────────────────────────────
 
@@ -41,39 +79,39 @@ class CacheService:
         """Get value from cache."""
         client = self._get_client()
         if client is None:
-            return None
+            return self._fallback.get(key)
         try:
             data = client.get(key)
             if data:
                 return json.loads(data)
             return None
         except Exception as e:
-            logger.warning(f"Cache get error for key {key}: {e}")
-            return None
+            self._mark_redis_dead(e)
+            return self._fallback.get(key)
 
     def set(self, key: str, value: Any, ex: int = 3600) -> bool:
         """Set value in cache with expiration (seconds)."""
         client = self._get_client()
         if client is None:
-            return False
+            return self._fallback.set(key, value, ex)
         try:
             client.setex(key, timedelta(seconds=ex), json.dumps(value, default=str))
             return True
         except Exception as e:
-            logger.warning(f"Cache set error for key {key}: {e}")
-            return False
+            self._mark_redis_dead(e)
+            return self._fallback.set(key, value, ex)
 
     def delete(self, key: str) -> bool:
         """Delete a cache key."""
         client = self._get_client()
         if client is None:
-            return False
+            return self._fallback.delete(key)
         try:
             client.delete(key)
             return True
         except Exception as e:
-            logger.warning(f"Cache delete error for key {key}: {e}")
-            return False
+            self._mark_redis_dead(e)
+            return self._fallback.delete(key)
 
     def delete_pattern(self, pattern: str) -> int:
         """Delete all keys matching a pattern."""

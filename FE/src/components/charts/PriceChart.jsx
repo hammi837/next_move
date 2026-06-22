@@ -39,7 +39,7 @@ const neonGlowPlugin = {
   }
 };
 
-const PriceChart = ({ data, symbol }) => {
+const PriceChart = ({ data, symbol, interval = '1d' }) => {
   if (!data || data.length === 0) {
     return (
       <div className="flex items-center justify-center h-64 bg-gray-800 bg-opacity-50 rounded-xl border border-gray-700">
@@ -48,12 +48,27 @@ const PriceChart = ({ data, symbol }) => {
     );
   }
 
+  const isIntraday = interval !== '1d';
+
+  // Format x-axis labels based on interval
+  const formatLabel = (ts) => {
+    const date = new Date(ts);
+    if (interval === '1d') {
+      return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    }
+    if (interval === '1h' || interval === '30m') {
+      // 5D or 1D: show day + time
+      const day = date.toLocaleDateString('en-US', { weekday: 'short' });
+      const time = date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+      return interval === '30m' ? time : `${day} ${time}`;
+    }
+    // default
+    return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+  };
+
   // Format data for Chart.js
   const chartData = {
-    labels: data.map(d => {
-      const date = new Date(d.timestamp);
-      return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-    }),
+    labels: data.map(d => formatLabel(d.timestamp)),
     datasets: [
       {
         label: `${symbol} Price`,
@@ -109,7 +124,7 @@ const PriceChart = ({ data, symbol }) => {
         },
         ticks: {
           color: '#5a6478',
-          maxTicksLimit: 7,
+          maxTicksLimit: isIntraday ? 10 : 7,
           font: { family: "'JetBrains Mono', monospace" }
         }
       },
