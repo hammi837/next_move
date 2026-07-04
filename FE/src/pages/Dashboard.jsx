@@ -161,7 +161,7 @@ export default function Dashboard() {
           const tfLabel = [
             { label: '1D', days: 1, interval: '30m' },
             { label: '5D', days: 5, interval: '1h'  },
-            { label: '1W', days: 7, interval: '1d'  },
+            { label: '1W', days: 7, interval: '1h'  },
             { label: '1M', days: 30, interval: '1d' },
             { label: '3M', days: 90, interval: '1d' },
           ].find(t => t.days === timeframe && t.interval === interval)?.label || '';
@@ -204,7 +204,7 @@ export default function Dashboard() {
                     {[
                       { label: '1D', days: 1,  interval: '30m' },
                       { label: '5D', days: 5,  interval: '1h'  },
-                      { label: '1W', days: 7,  interval: '1d'  },
+                      { label: '1W', days: 7,  interval: '1h'  },
                       { label: '1M', days: 30, interval: '1d'  },
                       { label: '3M', days: 90, interval: '1d'  },
                     ].map(tf => {
