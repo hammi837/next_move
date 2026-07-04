@@ -15,6 +15,7 @@ redis
 # Data Processing
 pandas
 numpy
+scikit-learn
 
 # API Integrations
 httpx
