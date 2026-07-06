@@ -171,3 +171,107 @@ class DataSyncLog(Base):
     execution_time_ms = Column(Integer, nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+# ── Phase 4 Models ────────────────────────────────────────────────────────
+# Added here so init_db() picks them up via app/db/database.py Base.
+
+class UserRole(str, enum.Enum):
+    ADMIN   = "admin"
+    PREMIUM = "premium"
+    FREE    = "free"
+
+
+class AppUser(Base):
+    """User accounts (sync stack version)."""
+    __tablename__ = "app_users"
+
+    id              = Column(Integer, primary_key=True, index=True)
+    username        = Column(String(50),  unique=True, index=True, nullable=False)
+    email           = Column(String(100), unique=True, index=True, nullable=False)
+    hashed_password = Column(String(255), nullable=False)
+    full_name       = Column(String(200), nullable=True)
+    role            = Column(Enum(UserRole), default=UserRole.FREE)
+    is_active       = Column(Integer, default=1)
+    preferences     = Column(JSON, default={})
+    created_at      = Column(DateTime, default=datetime.utcnow)
+    last_login      = Column(DateTime, nullable=True)
+
+
+class Portfolio(Base):
+    """User portfolios."""
+    __tablename__ = "portfolios"
+
+    id                 = Column(Integer, primary_key=True, index=True)
+    user_id            = Column(Integer, index=True, nullable=False)
+    name               = Column(String(100), nullable=False)
+    description        = Column(String(500), nullable=True)
+    initial_investment = Column(Float, default=0.0)
+    current_value      = Column(Float, default=0.0)
+    risk_level         = Column(String(20), default="medium")
+    is_public          = Column(Integer, default=0)
+    created_at         = Column(DateTime, default=datetime.utcnow)
+    updated_at         = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (Index("idx_portfolio_user", "user_id"),)
+
+
+class Position(Base):
+    """Holdings inside a portfolio."""
+    __tablename__ = "positions"
+
+    id                  = Column(Integer, primary_key=True, index=True)
+    portfolio_id        = Column(Integer, index=True, nullable=False)
+    symbol              = Column(String(20), nullable=False)
+    quantity            = Column(Float, nullable=False)
+    entry_price         = Column(Float, nullable=False)
+    entry_date          = Column(DateTime, default=datetime.utcnow)
+    current_price       = Column(Float, nullable=True)
+    current_value       = Column(Float, nullable=True)
+    profit_loss         = Column(Float, nullable=True)
+    profit_loss_percent = Column(Float, nullable=True)
+    stop_loss           = Column(Float, nullable=True)
+    take_profit         = Column(Float, nullable=True)
+    status              = Column(String(20), default="open")
+    closed_date         = Column(DateTime, nullable=True)
+    created_at          = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (Index("idx_position_portfolio", "portfolio_id"),)
+
+
+class UserAlert(Base):
+    """User-defined price & signal alerts (sync stack)."""
+    __tablename__ = "user_alerts"
+
+    id              = Column(Integer, primary_key=True, index=True)
+    user_id         = Column(Integer, index=True, nullable=False)
+    symbol          = Column(String(20), nullable=False, index=True)
+    alert_type      = Column(String(50), default="price")   # price, signal, rsi
+    condition       = Column(String(50), nullable=False)    # above, below, crosses
+    threshold_value = Column(Float, nullable=True)
+    note            = Column(String(255), nullable=True)
+    is_active       = Column(Integer, default=1)
+    is_triggered    = Column(Integer, default=0)
+    triggered_at    = Column(DateTime, nullable=True)
+    triggered_price = Column(Float, nullable=True)
+    notify_email    = Column(Integer, default=1)
+    created_at      = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("idx_alert_user_symbol", "user_id", "symbol"),
+        Index("idx_alert_active",      "is_active", "is_triggered"),
+    )
+
+
+class WatchList(Base):
+    """User watch lists."""
+    __tablename__ = "watch_lists"
+
+    id          = Column(Integer, primary_key=True, index=True)
+    user_id     = Column(Integer, index=True, nullable=False)
+    name        = Column(String(100), nullable=False)
+    description = Column(String(500), nullable=True)
+    symbols     = Column(JSON, default=[])
+    is_public   = Column(Integer, default=0)
+    created_at  = Column(DateTime, default=datetime.utcnow)
+    updated_at  = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
