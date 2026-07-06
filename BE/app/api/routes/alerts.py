@@ -1,123 +1,101 @@
 """
-Alert route module.
-
-CRUD endpoints for user price alerts.
+Alert CRUD + manual price-check routes (sync stack).
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.security import HTTPBearer, HTTPAuthCredentials
+from sqlalchemy.orm import Session
 
-from app.api.dependencies import get_current_user, get_db_session
-from app.schemas.alert import AlertCreate, AlertResponse, AlertUpdate
+from app.db.database import get_db
+from app.services.auth_service import auth_service
+from app.services.alert_service import alert_service
 
-router = APIRouter(
-    prefix="/api/alerts",
-    tags=["Alerts"],
-)
+router   = APIRouter()
+security = HTTPBearer(auto_error=False)
 
 
-@router.get(
-    "",
-    response_model=list[AlertResponse],
-    summary="List user alerts",
-)
-def list_alerts(
-    db: AsyncSession = Depends(get_db_session),
-    current_user=Depends(get_current_user),
-) -> list[AlertResponse]:
-    """Return all alerts belonging to the authenticated user."""
-    from app.models.alert import Alert
+def _user(credentials: HTTPAuthCredentials = Depends(security),
+          db: Session = Depends(get_db)):
+    if not credentials:
+        raise HTTPException(401, "Not authenticated")
+    u = auth_service.get_user_from_token(db, credentials.credentials)
+    if not u:
+        raise HTTPException(401, "Invalid token")
+    return u
 
-    result = await db.execute(
-        select(Alert)
-        .where(Alert.user_id == current_user.id)
-        .order_by(Alert.created_at.desc())
+
+def _alert_dict(a) -> dict:
+    return {
+        "id":              a.id,
+        "symbol":          a.symbol,
+        "alert_type":      a.alert_type,
+        "condition":       a.condition,
+        "threshold_value": a.threshold_value,
+        "note":            a.note,
+        "is_active":       bool(a.is_active),
+        "is_triggered":    bool(a.is_triggered),
+        "triggered_at":    a.triggered_at.isoformat() if a.triggered_at else None,
+        "triggered_price": a.triggered_price,
+        "created_at":      a.created_at.isoformat() if a.created_at else None,
+    }
+
+
+# ── List ──────────────────────────────────────────────────────────────────
+
+@router.get("")
+def list_alerts(active_only: bool = False,
+                user=Depends(_user), db: Session = Depends(get_db)):
+    return [_alert_dict(a) for a in
+            alert_service.list_for_user(db, user.id, active_only)]
+
+
+# ── Create ────────────────────────────────────────────────────────────────
+
+@router.post("", status_code=201)
+def create_alert(payload: dict,
+                 user=Depends(_user), db: Session = Depends(get_db)):
+    """
+    Body: { symbol, condition, threshold_value, alert_type?, note? }
+    condition: above | below | crosses
+    """
+    a = alert_service.create(
+        db,
+        user_id         = user.id,
+        symbol          = payload.get("symbol", ""),
+        condition       = payload.get("condition", "above"),
+        threshold_value = float(payload.get("threshold_value", 0)),
+        alert_type      = payload.get("alert_type", "price"),
+        note            = payload.get("note", ""),
     )
-    alerts = result.scalars().all()
-    return [AlertResponse.model_validate(a) for a in alerts]
+    return _alert_dict(a)
 
 
-@router.post(
-    "",
-    response_model=AlertResponse,
-    status_code=status.HTTP_201_CREATED,
-    summary="Create a new alert",
-)
-def create_alert(
-    payload: AlertCreate,
-    db: AsyncSession = Depends(get_db_session),
-    current_user=Depends(get_current_user),
-) -> AlertResponse:
-    """Create a new price alert for the authenticated user."""
-    from app.models.alert import Alert
+# ── Update ────────────────────────────────────────────────────────────────
 
-    alert = Alert(
-        user_id=current_user.id,
-        symbol=payload.symbol.upper(),
-        condition=payload.condition,
-        threshold=payload.threshold,
-        is_active=True,
-    )
-    db.add(alert)
-    await db.flush()
-    await db.refresh(alert)
-    return AlertResponse.model_validate(alert)
+@router.put("/{alert_id}")
+def update_alert(alert_id: int, payload: dict,
+                 user=Depends(_user), db: Session = Depends(get_db)):
+    a = alert_service.update(db, alert_id, user.id, **payload)
+    if not a:
+        raise HTTPException(404, "Alert not found")
+    return _alert_dict(a)
 
 
-@router.put(
-    "/{alert_id}",
-    response_model=AlertResponse,
-    summary="Update an alert",
-)
-def update_alert(
-    alert_id: int,
-    payload: AlertUpdate,
-    db: AsyncSession = Depends(get_db_session),
-    current_user=Depends(get_current_user),
-) -> AlertResponse:
-    """Update an existing alert owned by the authenticated user."""
-    from app.models.alert import Alert
+# ── Delete ────────────────────────────────────────────────────────────────
 
-    result = await db.execute(
-        select(Alert).where(Alert.id == alert_id, Alert.user_id == current_user.id)
-    )
-    alert = result.scalar_one_or_none()
-    if alert is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Alert not found",
-        )
-
-    update_data = payload.model_dump(exclude_unset=True)
-    for field, value in update_data.items():
-        setattr(alert, field, value)
-
-    await db.flush()
-    await db.refresh(alert)
-    return AlertResponse.model_validate(alert)
+@router.delete("/{alert_id}", status_code=204)
+def delete_alert(alert_id: int,
+                 user=Depends(_user), db: Session = Depends(get_db)):
+    if not alert_service.delete(db, alert_id, user.id):
+        raise HTTPException(404, "Alert not found")
 
 
-@router.delete(
-    "/{alert_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
-    summary="Delete an alert",
-)
-def delete_alert(
-    alert_id: int,
-    db: AsyncSession = Depends(get_db_session),
-    current_user=Depends(get_current_user),
-) -> None:
-    """Delete an alert owned by the authenticated user."""
-    from app.models.alert import Alert
+# ── Check (manual trigger test) ───────────────────────────────────────────
 
-    result = await db.execute(
-        select(Alert).where(Alert.id == alert_id, Alert.user_id == current_user.id)
-    )
-    alert = result.scalar_one_or_none()
-    if alert is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Alert not found",
-        )
-    await db.delete(alert)
+@router.post("/check/{symbol}")
+def check_alerts(symbol: str, payload: dict,
+                 db: Session = Depends(get_db)):
+    """Trigger check for a symbol at a given price. Used by background tasks."""
+    price     = float(payload.get("price", 0))
+    triggered = alert_service.check_and_trigger(db, symbol, price)
+    return {"triggered": triggered, "count": len(triggered)}
