@@ -1,99 +1,119 @@
 """
-Alert service.
-
-Business logic for creating, checking, and triggering price alerts.
+Alert management service — CRUD + price-check triggering.
 """
 
 from datetime import datetime
-from typing import Any, Optional
+from typing import Dict, List, Optional
+import logging
 
-from sqlalchemy import select, update
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
+from app.db.models import UserAlert
+
+logger = logging.getLogger(__name__)
 
 
 class AlertService:
-    """Manages lifecycle of user price alerts."""
 
-    def __init__(self, db: AsyncSession) -> None:
-        self.db = db
+    # ── CRUD ──────────────────────────────────────────────────────────────
 
-    async def create_alert(
-        self,
-        user_id: int,
-        symbol: str,
-        condition: str,
-        threshold: float,
-    ) -> dict[str, Any]:
-        """Create a new price alert and persist it."""
-        from app.models.alert import Alert, AlertCondition
-
-        alert = Alert(
-            user_id=user_id,
-            symbol=symbol.upper(),
-            condition=AlertCondition(condition),
-            threshold=threshold,
-            is_active=True,
+    @staticmethod
+    def create(db: Session, user_id: int, symbol: str,
+               condition: str, threshold_value: float,
+               alert_type: str = "price",
+               note: str = "") -> UserAlert:
+        a = UserAlert(
+            user_id         = user_id,
+            symbol          = symbol.upper(),
+            alert_type      = alert_type,
+            condition       = condition.lower(),
+            threshold_value = threshold_value,
+            note            = note,
         )
-        self.db.add(alert)
-        await self.db.flush()
-        await self.db.refresh(alert)
-        return {
-            "id": alert.id,
-            "symbol": alert.symbol,
-            "condition": alert.condition.value,
-            "threshold": alert.threshold,
-            "is_active": alert.is_active,
-        }
+        db.add(a)
+        db.commit()
+        db.refresh(a)
+        return a
 
-    async def check_alerts(
-        self,
-        symbol: str,
-        current_price: float,
-    ) -> list[dict[str, Any]]:
+    @staticmethod
+    def list_for_user(db: Session, user_id: int,
+                      active_only: bool = False) -> List[UserAlert]:
+        q = db.query(UserAlert).filter(UserAlert.user_id == user_id)
+        if active_only:
+            q = q.filter(UserAlert.is_active == 1)
+        return q.order_by(UserAlert.created_at.desc()).all()
+
+    @staticmethod
+    def update(db: Session, alert_id: int, user_id: int,
+               **kwargs) -> Optional[UserAlert]:
+        a = db.query(UserAlert).filter(
+            UserAlert.id == alert_id,
+            UserAlert.user_id == user_id,
+        ).first()
+        if not a:
+            return None
+        for k, v in kwargs.items():
+            if hasattr(a, k):
+                setattr(a, k, v)
+        db.commit()
+        db.refresh(a)
+        return a
+
+    @staticmethod
+    def delete(db: Session, alert_id: int, user_id: int) -> bool:
+        a = db.query(UserAlert).filter(
+            UserAlert.id == alert_id,
+            UserAlert.user_id == user_id,
+        ).first()
+        if not a:
+            return False
+        db.delete(a)
+        db.commit()
+        return True
+
+    # ── Price checking ────────────────────────────────────────────────────
+
+    @staticmethod
+    def check_and_trigger(db: Session, symbol: str,
+                           current_price: float) -> List[Dict]:
         """
-        Check all active alerts for *symbol* against *current_price*.
-
-        Returns a list of triggered alert details.
+        Check all active un-triggered alerts for `symbol`.
+        Returns list of triggered alert dicts.
         """
-        from app.models.alert import Alert, AlertCondition
+        alerts = db.query(UserAlert).filter(
+            UserAlert.symbol       == symbol.upper(),
+            UserAlert.is_active    == 1,
+            UserAlert.is_triggered == 0,
+        ).all()
 
-        result = await self.db.execute(
-            select(Alert).where(
-                Alert.symbol == symbol.upper(),
-                Alert.is_active == True,  # noqa: E712
-            )
-        )
-        alerts = result.scalars().all()
-        triggered: list[dict[str, Any]] = []
-
+        triggered = []
         for alert in alerts:
-            should_trigger = False
-            if alert.condition == AlertCondition.ABOVE and current_price >= alert.threshold:
-                should_trigger = True
-            elif alert.condition == AlertCondition.BELOW and current_price <= alert.threshold:
-                should_trigger = True
-            elif alert.condition == AlertCondition.PERCENT_CHANGE:
-                # percent_change alerts need a reference price – simplified here
-                should_trigger = False
+            should_fire = False
+            thr = alert.threshold_value
 
-            if should_trigger:
-                triggered_info = await self.trigger_alert(alert.id)
-                triggered.append(triggered_info)
+            if alert.condition == "above"  and current_price >  thr:
+                should_fire = True
+            elif alert.condition == "below" and current_price <  thr:
+                should_fire = True
+            elif alert.condition == "crosses":
+                should_fire = abs(current_price - thr) / thr < 0.005
+
+            if should_fire:
+                alert.is_triggered    = 1
+                alert.triggered_at    = datetime.utcnow()
+                alert.triggered_price = current_price
+                db.commit()
+                triggered.append({
+                    "alert_id":      alert.id,
+                    "user_id":       alert.user_id,
+                    "symbol":        alert.symbol,
+                    "condition":     alert.condition,
+                    "threshold":     thr,
+                    "current_price": current_price,
+                    "message":       f"{alert.symbol} {alert.condition} ${thr:.2f} — now ${current_price:.2f}",
+                })
+                logger.info(f"🔔 Alert {alert.id} triggered for user {alert.user_id}")
 
         return triggered
 
-    async def trigger_alert(self, alert_id: int) -> dict[str, Any]:
-        """Mark an alert as triggered and deactivate it."""
-        from app.models.alert import Alert
 
-        now = datetime.utcnow()
-        await self.db.execute(
-            update(Alert)
-            .where(Alert.id == alert_id)
-            .values(is_active=False, triggered_at=now)
-        )
-        return {
-            "alert_id": alert_id,
-            "triggered_at": now.isoformat(),
-            "status": "triggered",
-        }
+alert_service = AlertService()
