@@ -1,113 +1,125 @@
 """
-Authentication route module.
-
-Provides registration, login, token refresh, and user-profile endpoints.
+Authentication routes — register, login, me, refresh (sync stack).
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordRequestForm
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi.security import HTTPBearer, HTTPAuthCredentials
+from sqlalchemy.orm import Session
+from datetime import datetime
 
-from app.api.dependencies import get_current_user, get_db_session
-from app.core.security import (
-    create_access_token,
-    hash_password,
-    verify_password,
-)
-from app.schemas.user import UserCreate, UserResponse
+from app.db.database import get_db
+from app.services.auth_service import auth_service
 
-router = APIRouter(
-    prefix="/api/auth",
-    tags=["Authentication"],
-)
+router   = APIRouter()
+security = HTTPBearer(auto_error=False)
 
 
-@router.post(
-    "/register",
-    response_model=UserResponse,
-    status_code=status.HTTP_201_CREATED,
-    summary="Register a new user",
-)
-def register(
-    payload: UserCreate,
-    db: AsyncSession = Depends(get_db_session),
-) -> UserResponse:
-    """Create a new user account."""
-    from app.models.user import User
+def _current_user(
+    credentials: HTTPAuthCredentials = Depends(security),
+    db: Session = Depends(get_db),
+):
+    if not credentials:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    user = auth_service.get_user_from_token(db, credentials.credentials)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    return user
 
-    # Check if email already exists
-    existing = await db.execute(select(User).where(User.email == payload.email))
-    if existing.scalar_one_or_none() is not None:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Email already registered",
+
+# ── Register ──────────────────────────────────────────────────────────────
+
+@router.post("/register", status_code=201)
+def register(payload: dict, db: Session = Depends(get_db)):
+    """
+    Body: { username, email, password, full_name? }
+    """
+    try:
+        user = auth_service.register(
+            db,
+            username  = payload.get("username", ""),
+            email     = payload.get("email", ""),
+            password  = payload.get("password", ""),
+            full_name = payload.get("full_name", ""),
         )
+        token = auth_service.issue_token(user)
+        return {
+            "access_token": token,
+            "token_type":   "bearer",
+            "user": {
+                "id":        user.id,
+                "username":  user.username,
+                "email":     user.email,
+                "full_name": user.full_name,
+                "role":      user.role.value,
+            },
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
-    user = User(
-        email=payload.email,
-        hashed_password=hash_password(payload.password),
-        full_name=payload.full_name,
-        is_active=True,
+
+# ── Login ─────────────────────────────────────────────────────────────────
+
+@router.post("/login")
+def login(payload: dict, db: Session = Depends(get_db)):
+    """
+    Body: { username, password }   (username can be email too)
+    """
+    user = auth_service.login(
+        db,
+        username = payload.get("username", ""),
+        password = payload.get("password", ""),
     )
-    db.add(user)
-    await db.flush()
-    await db.refresh(user)
-    return UserResponse.model_validate(user)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
 
-
-@router.post(
-    "/login",
-    response_model=dict,
-    summary="Login and receive JWT",
-)
-def login(
-    form_data: OAuth2PasswordRequestForm = Depends(),
-    db: AsyncSession = Depends(get_db_session),
-) -> dict:
-    """Authenticate user and return an access token."""
-    from app.models.user import User
-
-    result = await db.execute(select(User).where(User.email == form_data.username))
-    user = result.scalar_one_or_none()
-
-    if user is None or not verify_password(form_data.password, user.hashed_password):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid email or password",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-    access_token = create_access_token(data={"sub": str(user.id)})
     return {
-        "access_token": access_token,
-        "token_type": "bearer",
+        "access_token": auth_service.issue_token(user),
+        "token_type":   "bearer",
+        "user": {
+            "id":        user.id,
+            "username":  user.username,
+            "email":     user.email,
+            "full_name": user.full_name,
+            "role":      user.role.value,
+        },
     }
 
 
-@router.get(
-    "/me",
-    response_model=UserResponse,
-    summary="Get current user profile",
-)
-def get_me(
-    current_user=Depends(get_current_user),
-) -> UserResponse:
-    """Return the profile of the currently authenticated user."""
-    return UserResponse.model_validate(current_user)
+# ── Current user ──────────────────────────────────────────────────────────
 
-
-@router.post(
-    "/refresh",
-    response_model=dict,
-    summary="Refresh access token",
-)
-def refresh_token(
-    current_user=Depends(get_current_user),
-) -> dict:
-    """Issue a fresh access token for the authenticated user."""
-    access_token = create_access_token(data={"sub": str(current_user.id)})
+@router.get("/me")
+def get_me(user=Depends(_current_user)):
     return {
-        "access_token": access_token,
-        "token_type": "bearer",
+        "id":          user.id,
+        "username":    user.username,
+        "email":       user.email,
+        "full_name":   user.full_name,
+        "role":        user.role.value,
+        "preferences": user.preferences or {},
+        "last_login":  user.last_login.isoformat() if user.last_login else None,
+    }
+
+
+# ── Update preferences ────────────────────────────────────────────────────
+
+@router.put("/preferences")
+def update_preferences(
+    payload: dict,
+    user=Depends(_current_user),
+    db: Session = Depends(get_db),
+):
+    prefs = dict(user.preferences or {})
+    prefs.update(payload)
+    user.preferences = prefs
+    db.commit()
+    return {"status": "ok", "preferences": user.preferences}
+
+
+# ── Refresh ───────────────────────────────────────────────────────────────
+
+@router.post("/refresh")
+def refresh(user=Depends(_current_user)):
+    return {
+        "access_token": auth_service.issue_token(user),
+        "token_type":   "bearer",
     }
