@@ -55,6 +55,11 @@ class Settings(BaseSettings):
     ALPHA_VANTAGE_KEY: str = os.getenv("ALPHA_VANTAGE_KEY", "")
     ALPHA_VANTAGE_URL: str = "https://www.alphavantage.co/query"
 
+    # =================== AUTH SETTINGS ===================
+    SECRET_KEY: str = os.getenv("SECRET_KEY", "change-me-in-production")
+    ALGORITHM: str  = os.getenv("ALGORITHM",  "HS256")
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "1440"))
+
     # =================== CORS SETTINGS ===================
     ALLOWED_ORIGINS: List[str] = [
         "http://localhost:3000",
