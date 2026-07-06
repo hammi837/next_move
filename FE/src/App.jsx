@@ -10,20 +10,32 @@ import Settings from './pages/Settings';
 import Login from './pages/Login';
 import Register from './pages/Register';
 
+// Protected route — redirects to /login if no token
+function Protected({ children }) {
+  const token = localStorage.getItem('token');
+  return token ? children : <Navigate to="/login" replace />;
+}
+
 function App() {
   return (
     <AnimatePresence mode="wait">
       <Routes>
-        <Route path="/login" element={<Login />} />
+        <Route path="/login"    element={<Login />} />
         <Route path="/register" element={<Register />} />
-        <Route path="/" element={<Layout />}>
-          <Route index element={<Dashboard />} />
-          <Route path="dashboard" element={<Dashboard />} />
+
+        <Route path="/" element={
+          <Protected>
+            <Layout />
+          </Protected>
+        }>
+          <Route index                  element={<Dashboard />} />
+          <Route path="dashboard"       element={<Dashboard />} />
           <Route path="market-analysis" element={<MarketAnalysis />} />
-          <Route path="predictions" element={<Predictions />} />
-          <Route path="alerts" element={<Alerts />} />
-          <Route path="settings" element={<Settings />} />
+          <Route path="predictions"     element={<Predictions />} />
+          <Route path="alerts"          element={<Alerts />} />
+          <Route path="settings"        element={<Settings />} />
         </Route>
+
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </AnimatePresence>
