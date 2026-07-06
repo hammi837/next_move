@@ -12,6 +12,7 @@ BE/.pytest_cache/
 BE/.mypy_cache/
 BE/logs/
 BE/*.log
+BE/models/
 
 # Alembic
 BE/alembic/versions/__pycache__/
