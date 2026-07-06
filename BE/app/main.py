@@ -121,12 +121,16 @@ async def general_exception_handler(request, exc):
 
 # ── Register routers ────────────────────────────────────────────────────
 
-from app.api.routes.gold import router as gold_router          # noqa: E402
-from app.api.routes.stocks import router as stocks_router      # noqa: E402
-from app.api.routes.dashboard import router as dashboard_router # noqa: E402
-from app.api.routes.analysis import router as analysis_router   # noqa: E402
-from app.api.routes.indicators import router as indicators_router # noqa: E402
-from app.api.routes.predictions import router as predictions_router # noqa: E402
+from app.api.routes.gold         import router as gold_router          # noqa: E402
+from app.api.routes.stocks       import router as stocks_router          # noqa: E402
+from app.api.routes.dashboard    import router as dashboard_router       # noqa: E402
+from app.api.routes.analysis     import router as analysis_router        # noqa: E402
+from app.api.routes.indicators   import router as indicators_router      # noqa: E402
+from app.api.routes.predictions  import router as predictions_router     # noqa: E402
+from app.api.routes.auth         import router as auth_router            # noqa: E402
+from app.api.routes.alerts       import router as alerts_router          # noqa: E402
+from app.api.routes.portfolio    import router as portfolio_router       # noqa: E402
+from app.api.routes.websocket    import router as websocket_router       # noqa: E402
 
 app.include_router(gold_router,        prefix="/api/gold",        tags=["Gold"])
 app.include_router(stocks_router,      prefix="/api/stocks",      tags=["Stocks"])
@@ -134,6 +138,10 @@ app.include_router(dashboard_router,   prefix="/api/dashboard",   tags=["Dashboa
 app.include_router(analysis_router,    prefix="/api/analysis",    tags=["Analysis"])
 app.include_router(indicators_router,  prefix="/api/indicators",  tags=["Technical Indicators"])
 app.include_router(predictions_router, prefix="/api/predictions", tags=["ML Predictions"])
+app.include_router(auth_router,        prefix="/api/auth",        tags=["Authentication"])
+app.include_router(alerts_router,      prefix="/api/alerts",      tags=["Alerts"])
+app.include_router(portfolio_router,   prefix="/api/portfolio",   tags=["Portfolio"])
+app.include_router(websocket_router,                               tags=["WebSocket"])
 
 
 if __name__ == "__main__":
