@@ -69,7 +69,7 @@ def get_stock_price(symbol: str, db: Session = Depends(get_db)):
 def get_stock_history(
     symbol: str,
     days: int = Query(30, ge=1, le=365),
-    interval: str = Query("1d", regex="^(1m|5m|15m|30m|1h|1d)$"),
+    interval: str = Query("1d", pattern="^(1m|5m|15m|30m|1h|1d)$"),
     db: Session = Depends(get_db),
 ):
     """Get historical stock prices. interval: 1m,5m,15m,30m,1h for intraday; 1d for daily."""
