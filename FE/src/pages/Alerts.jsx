@@ -283,5 +283,3 @@ function AlertRow({ alert, onDelete, onToggle }) {
     </div>
   );
 }
-
-const conditionColor = { above: '#00e68a', below: '#ff4757', crosses: '#ffc107' };
