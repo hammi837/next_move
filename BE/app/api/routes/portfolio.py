@@ -3,7 +3,7 @@ Portfolio & position management routes (sync stack).
 """
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.security import HTTPBearer, HTTPAuthCredentials
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
@@ -14,7 +14,7 @@ router   = APIRouter()
 security = HTTPBearer(auto_error=False)
 
 
-def _user(credentials: HTTPAuthCredentials = Depends(security),
+def _user(credentials: HTTPAuthorizationCredentials = Depends(security),
           db: Session = Depends(get_db)):
     if not credentials:
         raise HTTPException(401, "Not authenticated")
