@@ -67,7 +67,7 @@ def get_current_gold_price(db: Session = Depends(get_db)):
 @router.get("/history")
 def get_gold_history(
     days: int = Query(7, ge=1, le=365),
-    interval: str = Query("1d", regex="^(1m|5m|15m|30m|1h|1d)$"),
+    interval: str = Query("1d", pattern="^(1m|5m|15m|30m|1h|1d)$"),
     db: Session = Depends(get_db),
 ):
     """Get historical gold prices. interval: 1m,5m,15m,30m,1h for intraday; 1d for daily."""
